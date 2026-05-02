@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 host = "0.0.0.0"
 port = 5092
 CHUNK_MINUTE = 1.5  # Target 90-second chunks with intelligent silence-based splitting
@@ -40,7 +42,7 @@ if sys.platform == "win32":
     os.environ["PATH"] = ROOT_DIR + f";{ROOT_DIR}/ffmpeg;" + os.environ["PATH"]
 
 
-def _get_env_int(name: str, default: int, minimum: int = 1) -> int:
+def get_env_int(name: str, default: int, minimum: int = 1) -> int:
     try:
         return max(minimum, int(os.environ.get(name, default)))
     except (TypeError, ValueError):
@@ -90,16 +92,19 @@ CPU_OPTIMIZATION = {
     "avx2_available": "avx2" in CPU_FLAGS,
     "fma_available": "fma" in CPU_FLAGS,
 }
-CPU_OPTIMIZATION["ort_intra_op_threads"] = _get_env_int(
+CPU_OPTIMIZATION["ort_intra_op_threads"] = get_env_int(
     "PARAKEET_ORT_INTRA_THREADS",
     min(CPU_OPTIMIZATION["physical_cpus"], CPU_OPTIMIZATION["available_logical_cpus"]),
 )
-CPU_OPTIMIZATION["ort_inter_op_threads"] = _get_env_int(
+CPU_OPTIMIZATION["ort_inter_op_threads"] = get_env_int(
     "PARAKEET_ORT_INTER_THREADS", 1
 )
-threads = _get_env_int(
+default_waitress_threads = min(
+    MAX_WAITRESS_THREADS, max(1, CPU_OPTIMIZATION["available_logical_cpus"] // 2)
+)
+threads = get_env_int(
     "PARAKEET_WAITRESS_THREADS",
-    min(MAX_WAITRESS_THREADS, max(1, CPU_OPTIMIZATION["available_logical_cpus"] // 2)),
+    default_waitress_threads,
 )
 
 # Keep non-ORT numeric libraries from creating competing thread pools. ONNX Runtime's
@@ -115,7 +120,7 @@ for _thread_env in (
     os.environ.setdefault(_thread_env, "1")
 
 
-def build_session_options() -> "ort.SessionOptions":
+def build_session_options() -> ort.SessionOptions:
     """Build ONNX Runtime session options tuned for AVX2-capable CPU inference."""
     sess_options = ort.SessionOptions()
     sess_options.intra_op_num_threads = CPU_OPTIMIZATION["ort_intra_op_threads"]
