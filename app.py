@@ -50,7 +50,7 @@ def get_env_int(name: str, default: int, minimum: int = 1) -> int:
         return max(minimum, default)
 
 
-def _available_cpu_count() -> int:
+def _get_available_logical_cpus() -> int:
     try:
         return len(os.sched_getaffinity(0))
     except (AttributeError, OSError):
@@ -62,10 +62,10 @@ def _physical_cpu_count() -> int:
     if cpu_count and cpu_count > 0:
         return cpu_count
     print("⚠️ Could not determine physical CPU count; using available logical CPUs")
-    return _available_cpu_count()
+    return _get_available_logical_cpus()
 
 
-def _detect_cpu_flags() -> set:
+def _detect_cpu_flags() -> set[str]:
     """
     Read CPU feature flags from /proc/cpuinfo on Linux.
 
@@ -87,7 +87,7 @@ def _detect_cpu_flags() -> set:
 
 CPU_FLAGS = _detect_cpu_flags()
 CPU_OPTIMIZATION = {
-    "available_logical_cpus": _available_cpu_count(),
+    "available_logical_cpus": _get_available_logical_cpus(),
     "physical_cpus": _physical_cpu_count(),
     "avx2_available": "avx2" in CPU_FLAGS,
     "fma_available": "fma" in CPU_FLAGS,
@@ -99,6 +99,7 @@ CPU_OPTIMIZATION["ort_intra_op_threads"] = get_env_int(
 CPU_OPTIMIZATION["ort_inter_op_threads"] = get_env_int(
     "PARAKEET_ORT_INTER_THREADS", 1
 )
+# Cap HTTP workers separately from ORT workers to avoid oversubscribing AVX2 kernels.
 default_waitress_threads = min(
     MAX_WAITRESS_THREADS, max(1, CPU_OPTIMIZATION["available_logical_cpus"] // 2)
 )
@@ -107,9 +108,9 @@ threads = get_env_int(
     default_waitress_threads,
 )
 
-# Keep non-ORT numeric libraries from creating competing thread pools. ONNX Runtime's
-# CPUExecutionProvider uses its own MLAS thread pool and dispatches AVX2 kernels when
-# available in the installed wheel and host CPU.
+# Keep non-ORT numeric libraries from creating competing thread pools in this
+# inference service. Override these environment variables before startup if custom
+# NumPy/BLAS work is added outside the ONNX Runtime path.
 for _thread_env in (
     "OMP_NUM_THREADS",
     "MKL_NUM_THREADS",
@@ -134,7 +135,7 @@ def build_session_options() -> ort.SessionOptions:
 
 
 def get_providers_to_try() -> tuple[list[str], list[str]]:
-    """Return available ONNX Runtime providers and the prioritized provider list."""
+    """Return (available_providers, prioritized_providers) for ONNX Runtime."""
     available_providers = ort.get_available_providers()
     providers = []
     if "TensorrtExecutionProvider" in available_providers:
