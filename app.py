@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 host = "0.0.0.0"
 port = 5092
-threads = 8  # Optimized for 8 P-cores
 CHUNK_MINUTE = 1.5  # Target 90-second chunks with intelligent silence-based splitting
 
 # Intelligent chunking configuration
@@ -9,6 +10,8 @@ SILENCE_MIN_DURATION = 0.5  # Minimum silence duration in seconds
 SILENCE_SEARCH_WINDOW = 30.0  # Search window in seconds around target split point
 SILENCE_DETECT_TIMEOUT = 300  # Timeout for silence detection in seconds
 MIN_SPLIT_GAP = 5.0  # Minimum gap between split points to prevent 0-length chunks
+MAX_WAITRESS_THREADS = 8
+WAITRESS_CPU_DIVISOR = 2
 
 import sys
 
@@ -43,6 +46,124 @@ if sys.platform == "win32":
     os.environ["PATH"] = ROOT_DIR + f";{ROOT_DIR}/ffmpeg;" + os.environ["PATH"]
 
 
+def get_env_int(name: str, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.environ.get(name, default)))
+    except (TypeError, ValueError):
+        fallback = max(minimum, default)
+        print(f"⚠️ Invalid {name} value; using {fallback}")
+        return fallback
+
+
+def _get_available_logical_cpus() -> int:
+    try:
+        return len(os.sched_getaffinity(0))
+    except (AttributeError, OSError):
+        cpu_count = os.cpu_count()
+        if cpu_count is None:
+            print("⚠️ Could not determine logical CPU count; using 1")
+            return 1
+        return cpu_count
+
+
+def _physical_cpu_count() -> int:
+    cpu_count = psutil.cpu_count(logical=False)
+    if cpu_count and cpu_count > 0:
+        return cpu_count
+    print("⚠️ Could not determine physical CPU count; using available logical CPUs")
+    return _get_available_logical_cpus()
+
+
+def _detect_cpu_flags() -> set[str]:
+    """
+    Read CPU feature flags from /proc/cpuinfo on Linux.
+
+    Returns an empty set on non-Linux platforms or when CPU flags cannot be read.
+    """
+    flags = set()
+    if sys.platform.startswith("linux"):
+        try:
+            with open(
+                "/proc/cpuinfo", "r", encoding="utf-8", errors="replace"
+            ) as cpuinfo:
+                for line in cpuinfo:
+                    if line.lower().startswith("flags"):
+                        _, value = line.split(":", 1)
+                        flags.update(value.strip().lower().split())
+        except OSError:
+            pass
+    return flags
+
+
+CPU_FLAGS = _detect_cpu_flags()
+CPU_OPTIMIZATION = {
+    "available_logical_cpus": _get_available_logical_cpus(),
+    "physical_cpus": _physical_cpu_count(),
+    "avx2_available": "avx2" in CPU_FLAGS,
+    "fma_available": "fma" in CPU_FLAGS,
+}
+# Respect container CPU limits while avoiding hyperthread oversubscription by default.
+# The minimum handles hosts where cpuset grants fewer CPUs than the physical count.
+default_ort_intra_threads = min(
+    CPU_OPTIMIZATION["physical_cpus"], CPU_OPTIMIZATION["available_logical_cpus"]
+)
+CPU_OPTIMIZATION["ort_intra_op_threads"] = get_env_int(
+    "PARAKEET_ORT_INTRA_THREADS",
+    default_ort_intra_threads,
+)
+CPU_OPTIMIZATION["ort_inter_op_threads"] = get_env_int(
+    "PARAKEET_ORT_INTER_THREADS", 1
+)
+# Cap HTTP workers separately from ORT workers to avoid oversubscribing AVX2 kernels.
+default_waitress_threads = min(
+    MAX_WAITRESS_THREADS,
+    max(1, CPU_OPTIMIZATION["available_logical_cpus"] // WAITRESS_CPU_DIVISOR),
+)
+threads = get_env_int(
+    "PARAKEET_WAITRESS_THREADS",
+    default_waitress_threads,
+)
+
+# Keep non-ORT numeric libraries from creating competing thread pools in this
+# inference service. Override these environment variables before startup if custom
+# NumPy/BLAS work is added outside the ONNX Runtime path.
+for _thread_env in (
+    "OMP_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+):
+    os.environ.setdefault(_thread_env, "1")
+
+
+def build_session_options() -> ort.SessionOptions:
+    """Build ONNX Runtime session options tuned for AVX2-capable CPU inference."""
+    sess_options = ort.SessionOptions()
+    sess_options.intra_op_num_threads = CPU_OPTIMIZATION["ort_intra_op_threads"]
+    sess_options.inter_op_num_threads = CPU_OPTIMIZATION["ort_inter_op_threads"]
+    sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    # Flush denormal floats to zero to avoid AVX2/FMA performance penalties.
+    sess_options.add_session_config_entry("session.set_denormal_as_zero", "1")
+    # Keep intra-op workers hot for low-latency AVX2 kernels; avoid inter-op spinning.
+    sess_options.add_session_config_entry("session.intra_op.allow_spinning", "1")
+    sess_options.add_session_config_entry("session.inter_op.allow_spinning", "0")
+    return sess_options
+
+
+def get_providers_to_try() -> tuple[list[str], list[str]]:
+    """Return (available_providers, prioritized_providers) for ONNX Runtime."""
+    available_providers = ort.get_available_providers()
+    providers = []
+    if "TensorrtExecutionProvider" in available_providers:
+        providers.append("TensorrtExecutionProvider")
+    if "CUDAExecutionProvider" in available_providers:
+        providers.append("CUDAExecutionProvider")
+    providers.append("CPUExecutionProvider")
+    return available_providers, providers
+
+
 # Model configurations for different precision variants
 MODEL_CONFIGS = {
     "parakeet-tdt-0.6b-v3": {
@@ -71,28 +192,28 @@ try:
     import onnxruntime as ort
 
     # Detect available providers
-    available_providers = ort.get_available_providers()
+    available_providers, providers_to_try = get_providers_to_try()
     print(f"Available providers: {available_providers}")
-
-    # Priority: Tensorrt, CUDA, CPU
-    providers_to_try = []
-    if "TensorrtExecutionProvider" in available_providers:
-        providers_to_try.append("TensorrtExecutionProvider")
-    if "CUDAExecutionProvider" in available_providers:
-        providers_to_try.append("CUDAExecutionProvider")
-    providers_to_try.append("CPUExecutionProvider")
-
     print(f"Using providers: {providers_to_try}")
+    print(
+        "CPU optimization: "
+        f"AVX2={'yes' if CPU_OPTIMIZATION['avx2_available'] else 'no'}, "
+        f"FMA={'yes' if CPU_OPTIMIZATION['fma_available'] else 'no'}, "
+        f"ORT intra_op={CPU_OPTIMIZATION['ort_intra_op_threads']}, "
+        f"ORT inter_op={CPU_OPTIMIZATION['ort_inter_op_threads']}, "
+        f"Waitress threads={threads}"
+    )
+    if not CPU_OPTIMIZATION["avx2_available"]:
+        print(
+            "⚠️ AVX2 was not detected from CPU flags; CPU inference may use a slower "
+            "ONNX Runtime path"
+        )
 
     # Load default INT8 model at startup
     print("\nLoading default Parakeet TDT 0.6B V3 ONNX model with INT8 quantization...")
 
     # Configure session options for optimal CPU performance
-    sess_options = ort.SessionOptions()
-    sess_options.intra_op_num_threads = 4  # Match Waitress threads
-    sess_options.inter_op_num_threads = 1
-    sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-    sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    sess_options = build_session_options()
 
     default_config = MODEL_CONFIGS["parakeet-tdt-0.6b-v3"]
     asr_model = onnx_asr.load_model(
@@ -141,25 +262,11 @@ def get_model(model_name):
     config = MODEL_CONFIGS[model_name]
 
     try:
-        import onnxruntime as ort
-
         # Reuse providers from startup
-        available_providers = ort.get_available_providers()
-        providers_to_try = []
-        if "TensorrtExecutionProvider" in available_providers:
-            providers_to_try.append("TensorrtExecutionProvider")
-        if "CUDAExecutionProvider" in available_providers:
-            providers_to_try.append("CUDAExecutionProvider")
-        providers_to_try.append("CPUExecutionProvider")
+        _, providers_to_try = get_providers_to_try()
 
         # Configure session options
-        sess_options = ort.SessionOptions()
-        sess_options.intra_op_num_threads = 4
-        sess_options.inter_op_num_threads = 1
-        sess_options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        sess_options.graph_optimization_level = (
-            ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        )
+        sess_options = build_session_options()
 
         model = onnx_asr.load_model(
             config["hf_id"],
@@ -488,6 +595,7 @@ def health():
             "models": available_models,
             "default_model": "parakeet-tdt-0.6b-v3",
             "speedup": "20.7x",
+            "cpu_optimization": CPU_OPTIMIZATION,
         }
     )
 
