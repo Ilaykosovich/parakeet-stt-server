@@ -7,6 +7,7 @@ Avoids per-chunk ffmpeg subprocesses. Strategy:
 """
 from __future__ import annotations
 import audioop
+import shutil
 import subprocess
 import wave
 from io import BytesIO
@@ -16,6 +17,21 @@ from typing import Optional, Tuple
 import numpy as np
 
 from .config import TARGET_SR, logger
+
+
+class AudioDecodeError(RuntimeError):
+    """Raised when uploaded audio cannot be decoded into model-ready PCM."""
+
+
+def _ffmpeg_exe() -> Optional[str]:
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return None
+    return imageio_ffmpeg.get_ffmpeg_exe()
 
 
 def _wav_info(data: bytes) -> Optional[dict]:
@@ -62,15 +78,29 @@ def _decode_pcm_wav(data: bytes, info: dict) -> Optional[np.ndarray]:
 
 def _ffmpeg_decode(data: bytes) -> np.ndarray:
     """Decode any container/codec to mono 16 kHz float32 via a single ffmpeg call."""
+    ffmpeg = _ffmpeg_exe()
+    if ffmpeg is None:
+        raise AudioDecodeError(
+            "FFmpeg is not installed or is not on PATH. Install ffmpeg, or upload "
+            "an uncompressed PCM WAV file."
+        )
     cmd = [
-        "ffmpeg", "-nostdin", "-loglevel", "error",
+        ffmpeg, "-nostdin", "-loglevel", "error",
         "-i", "pipe:0",
         "-ac", "1", "-ar", str(TARGET_SR),
         "-f", "s16le", "pipe:1",
     ]
-    p = subprocess.run(cmd, input=data, capture_output=True, check=False)
+    try:
+        p = subprocess.run(cmd, input=data, capture_output=True, check=False)
+    except FileNotFoundError as exc:
+        raise AudioDecodeError(
+            "FFmpeg is not installed or is not on PATH. Install ffmpeg, or upload "
+            "an uncompressed PCM WAV file."
+        ) from exc
     if p.returncode != 0:
-        raise RuntimeError(f"ffmpeg decode failed: {p.stderr.decode(errors='ignore')[:300]}")
+        err = p.stderr.decode(errors="ignore")[:300].strip()
+        detail = f": {err}" if err else ""
+        raise AudioDecodeError(f"ffmpeg decode failed{detail}")
     return np.frombuffer(p.stdout, dtype="<i2").astype(np.float32) / 32768.0
 
 

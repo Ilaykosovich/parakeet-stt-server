@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Parakeet Recorder</title>
+    <style>
+        :root {
+            --bg: #0b1020;
+            --panel: #11182a;
+            --panel-2: #151f34;
+            --line: #26324a;
+            --text: #eef4ff;
+            --muted: #91a0b8;
+            --blue: #3abff8;
+            --green: #37d99e;
+            --red: #ff5c77;
+            --amber: #ffbf47;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background:
+                linear-gradient(140deg, rgba(58, 191, 248, 0.12), transparent 34%),
+                linear-gradient(320deg, rgba(55, 217, 158, 0.1), transparent 30%),
+                var(--bg);
+            color: var(--text);
+        }
+
+        main {
+            width: min(1280px, calc(100% - 32px));
+            margin: 0 auto;
+            padding: 48px 0;
+        }
+
+        header {
+            display: flex;
+            align-items: flex-end;
+            justify-content: space-between;
+            gap: 24px;
+            margin-bottom: 28px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: clamp(2rem, 5vw, 4rem);
+            line-height: 1;
+            letter-spacing: 0;
+        }
+
+        .subhead {
+            margin: 12px 0 0;
+            color: var(--muted);
+            font-size: 1rem;
+        }
+
+        .status {
+            min-width: 170px;
+            padding: 12px 14px;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: rgba(17, 24, 42, 0.78);
+            text-align: right;
+        }
+
+        .status-label {
+            display: block;
+            color: var(--muted);
+            font-size: 0.78rem;
+            margin-bottom: 4px;
+        }
+
+        .status-value {
+            font-weight: 700;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 320px minmax(0, 1fr) minmax(0, 1fr);
+            gap: 18px;
+        }
+
+        section {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: rgba(17, 24, 42, 0.86);
+        }
+
+        .recorder {
+            padding: 18px;
+        }
+
+        .meter {
+            height: 150px;
+            border-radius: 8px;
+            background:
+                linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.01)),
+                var(--panel-2);
+            border: 1px solid var(--line);
+            display: grid;
+            place-items: end center;
+            overflow: hidden;
+            margin-bottom: 16px;
+        }
+
+        .meter-fill {
+            width: 100%;
+            height: 2%;
+            background: linear-gradient(180deg, var(--green), var(--blue));
+            transition: height 80ms linear;
+        }
+
+        .time {
+            font-variant-numeric: tabular-nums;
+            font-size: 2rem;
+            font-weight: 800;
+            margin-bottom: 16px;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+
+        button, select {
+            min-height: 44px;
+            border-radius: 8px;
+            border: 1px solid transparent;
+            font: inherit;
+        }
+
+        button {
+            cursor: pointer;
+            color: #06111f;
+            font-weight: 800;
+        }
+
+        button:disabled {
+            cursor: not-allowed;
+            opacity: 0.48;
+        }
+
+        .start {
+            background: var(--green);
+        }
+
+        .stop {
+            background: var(--red);
+        }
+
+        .secondary {
+            color: var(--text);
+            background: transparent;
+            border-color: var(--line);
+        }
+
+        select {
+            width: 100%;
+            color: var(--text);
+            background: var(--panel-2);
+            border-color: var(--line);
+            padding: 0 12px;
+            margin-bottom: 14px;
+        }
+
+        audio {
+            width: 100%;
+            margin-top: 4px;
+        }
+
+        .result {
+            display: flex;
+            flex-direction: column;
+            min-height: 480px;
+        }
+
+        .result-head {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .result-title {
+            font-weight: 800;
+        }
+
+        .result-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        textarea {
+            flex: 1;
+            width: 100%;
+            min-height: 0;
+            resize: none;
+            overflow-y: auto;
+            border: 0;
+            outline: 0;
+            padding: 18px;
+            background: transparent;
+            color: var(--text);
+            font: 1rem/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+        }
+
+        .hint {
+            color: var(--muted);
+            font-size: 0.88rem;
+            line-height: 1.45;
+        }
+
+        .busy {
+            color: var(--amber);
+        }
+
+        .ready {
+            color: var(--green);
+        }
+
+        .error {
+            color: var(--red);
+        }
+
+    @media (max-width: 760px) {
+            main {
+                padding: 28px 0;
+            }
+
+            header {
+                align-items: stretch;
+                flex-direction: column;
+            }
+
+            .status {
+                text-align: left;
+            }
+
+            .layout {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+<main>
+    <header>
+        <div>
+            <h1>Parakeet Recorder</h1>
+            <p class="subhead">Record speech in the browser, send it to this server, and read the transcript below.</p>
+        </div>
+        <div class="status" aria-live="polite">
+            <span class="status-label">Status</span>
+            <span class="status-value ready" id="statusText">Ready</span>
+        </div>
+    </header>
+
+    <div class="layout">
+        <section class="recorder">
+            <div class="meter" aria-hidden="true">
+                <div class="meter-fill" id="meterFill"></div>
+            </div>
+            <div class="time" id="timer">00:00</div>
+
+            <select id="model">
+                <option value="istupakov/parakeet-tdt-0.6b-v3-onnx">GPU default - FP32</option>
+                <option value="grikdotnet/parakeet-tdt-0.6b-fp16">FP16</option>
+                <option value="parakeet-tdt-0.6b-v3">CPU INT8</option>
+            </select>
+
+            <div class="controls">
+                <button class="start" id="startBtn">Start</button>
+                <button class="stop" id="stopBtn" disabled>Stop</button>
+            </div>
+
+            <button class="secondary" id="sendBtn" disabled>Send last recording</button>
+            <audio id="player" controls hidden></audio>
+            <p class="hint">
+                Open this page through an SSH tunnel as localhost so browser microphone access works:
+                http://127.0.0.1:5092/record
+            </p>
+        </section>
+
+        <section class="result">
+            <div class="result-head">
+                <span class="result-title">Transcript</span>
+                <button class="secondary" id="copyBtn">Copy</button>
+            </div>
+            <textarea id="output" placeholder="Transcript will appear here after you stop recording."></textarea>
+        </section>
+
+        <section class="result">
+            <div class="result-head">
+                <span class="result-title">Text</span>
+                <div class="result-actions">
+                    <button class="secondary" id="clearTextBtn">Clear</button>
+                    <button class="secondary" id="copyTextBtn">Copy</button>
+                </div>
+            </div>
+            <textarea id="textOutput" placeholder="Text will appear here after transcription."></textarea>
+        </section>
+    </div>
+</main>
+
+<script>
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const sendBtn = document.getElementById("sendBtn");
+    const copyBtn = document.getElementById("copyBtn");
+    const copyTextBtn = document.getElementById("copyTextBtn");
+    const clearTextBtn = document.getElementById("clearTextBtn");
+    const statusText = document.getElementById("statusText");
+    const timer = document.getElementById("timer");
+    const output = document.getElementById("output");
+    const textOutput = document.getElementById("textOutput");
+    const player = document.getElementById("player");
+    const meterFill = document.getElementById("meterFill");
+    const model = document.getElementById("model");
+
+    let stream = null;
+    let recorder = null;
+    let chunks = [];
+    let lastBlob = null;
+    let timerId = null;
+    let startedAt = 0;
+    let audioContext = null;
+    let analyser = null;
+    let meterFrame = null;
+
+    function setStatus(text, kind = "ready") {
+        statusText.textContent = text;
+        statusText.className = `status-value ${kind}`;
+    }
+
+    function formatTime(ms) {
+        const total = Math.floor(ms / 1000);
+        const minutes = String(Math.floor(total / 60)).padStart(2, "0");
+        const seconds = String(total % 60).padStart(2, "0");
+        return `${minutes}:${seconds}`;
+    }
+
+    function startTimer() {
+        startedAt = Date.now();
+        timer.textContent = "00:00";
+        timerId = window.setInterval(() => {
+            timer.textContent = formatTime(Date.now() - startedAt);
+        }, 250);
+    }
+
+    function stopTimer() {
+        window.clearInterval(timerId);
+        timerId = null;
+    }
+
+    function startMeter(inputStream) {
+        audioContext = new AudioContext();
+        analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        const source = audioContext.createMediaStreamSource(inputStream);
+        source.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+
+        const draw = () => {
+            analyser.getByteFrequencyData(data);
+            const average = data.reduce((sum, value) => sum + value, 0) / data.length;
+            const percent = Math.min(100, Math.max(2, average * 1.25));
+            meterFill.style.height = `${percent}%`;
+            meterFrame = window.requestAnimationFrame(draw);
+        };
+        draw();
+    }
+
+    async function stopMeter() {
+        window.cancelAnimationFrame(meterFrame);
+        meterFill.style.height = "2%";
+        if (audioContext) {
+            await audioContext.close();
+        }
+        audioContext = null;
+        analyser = null;
+    }
+
+    function pickMimeType() {
+        const options = [
+            "audio/webm;codecs=opus",
+            "audio/webm",
+            "audio/ogg;codecs=opus",
+            "audio/mp4"
+        ];
+        return options.find((type) => MediaRecorder.isTypeSupported(type)) || "";
+    }
+
+    async function startRecording() {
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            chunks = [];
+            lastBlob = null;
+            const mimeType = pickMimeType();
+            recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+
+            recorder.addEventListener("dataavailable", (event) => {
+                if (event.data.size > 0) {
+                    chunks.push(event.data);
+                }
+            });
+
+            recorder.addEventListener("stop", async () => {
+                lastBlob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+                player.src = URL.createObjectURL(lastBlob);
+                player.hidden = false;
+                sendBtn.disabled = false;
+                stream.getTracks().forEach((track) => track.stop());
+                await stopMeter();
+                await sendRecording();
+            });
+
+            recorder.start();
+            startTimer();
+            startMeter(stream);
+            startBtn.disabled = true;
+            stopBtn.disabled = false;
+            sendBtn.disabled = true;
+            output.value = "";
+            setStatus("Recording", "busy");
+        } catch (error) {
+            setStatus("Microphone blocked", "error");
+            output.value = `Could not start recording: ${error.message}`;
+        }
+    }
+
+    function stopRecording() {
+        if (!recorder || recorder.state !== "recording") {
+            return;
+        }
+        stopBtn.disabled = true;
+        stopTimer();
+        setStatus("Preparing audio", "busy");
+        recorder.stop();
+        startBtn.disabled = false;
+    }
+
+    async function sendRecording() {
+        if (!lastBlob) {
+            return;
+        }
+
+        setStatus("Transcribing", "busy");
+        sendBtn.disabled = true;
+
+        const formData = new FormData();
+        const extension = lastBlob.type.includes("ogg") ? "ogg" : lastBlob.type.includes("mp4") ? "m4a" : "webm";
+        formData.append("file", lastBlob, `recording.${extension}`);
+        formData.append("model", model.value);
+        formData.append("response_format", "text");
+
+        try {
+            const response = await fetch("/v1/audio/transcriptions", {
+                method: "POST",
+                body: formData
+            });
+
+            const text = await response.text();
+            if (!response.ok) {
+                throw new Error(text || `HTTP ${response.status}`);
+            }
+
+            const transcript = text.trim();
+            output.value = transcript;
+            textOutput.value = textOutput.value
+                ? `${textOutput.value}\n\n${transcript}`
+                : transcript;
+            textOutput.scrollTop = textOutput.scrollHeight;
+            setStatus("Done", "ready");
+        } catch (error) {
+            output.value = `Transcription failed: ${error.message}`;
+            setStatus("Failed", "error");
+        } finally {
+            sendBtn.disabled = false;
+        }
+    }
+
+    startBtn.addEventListener("click", startRecording);
+    stopBtn.addEventListener("click", stopRecording);
+    sendBtn.addEventListener("click", sendRecording);
+    copyBtn.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(output.value);
+        setStatus("Copied", "ready");
+        window.setTimeout(() => setStatus("Ready", "ready"), 1200);
+    });
+    copyTextBtn.addEventListener("click", async () => {
+        await navigator.clipboard.writeText(textOutput.value);
+        setStatus("Copied", "ready");
+        window.setTimeout(() => setStatus("Ready", "ready"), 1200);
+    });
+    clearTextBtn.addEventListener("click", () => {
+        textOutput.value = "";
+        setStatus("Text cleared", "ready");
+        window.setTimeout(() => setStatus("Ready", "ready"), 1200);
+    });
+
+    if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+        startBtn.disabled = true;
+        setStatus("Unsupported browser", "error");
+        output.value = "This browser does not support MediaRecorder microphone capture.";
+    }
+</script>
+</body>
+</html>

@@ -9,9 +9,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
+from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-from .audio import load_audio
+from .audio import AudioDecodeError, load_audio
 from .chunker import auto_chunk, slice_chunks
 from .config import (
     CPU_INFO,
@@ -23,6 +24,8 @@ from .config import (
 from .model import loaded_models
 
 router = APIRouter()
+ROOT_DIR = Path(__file__).resolve().parent.parent
+TEMPLATES_DIR = ROOT_DIR / "templates"
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +88,14 @@ def _extract(result) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
+@router.get("/record", include_in_schema=False)
+def recorder_page():
+    recorder = TEMPLATES_DIR / "recorder.html"
+    if not recorder.exists():
+        raise HTTPException(status_code=404, detail="Recorder UI not found")
+    return FileResponse(recorder)
+
+
 @router.get("/health")
 def health():
     return {
@@ -128,6 +139,9 @@ async def transcribe(
     t0 = time.perf_counter()
     try:
         wav = load_audio(raw)
+    except AudioDecodeError as exc:
+        logger.warning("audio decode failed: %s", exc)
+        raise HTTPException(status_code=415, detail=f"audio decode failed: {exc}") from exc
     except Exception as exc:
         logger.exception("audio decode failed")
         raise HTTPException(status_code=415, detail=f"audio decode failed: {exc}") from exc
@@ -233,7 +247,14 @@ async def transcribe_batch(
 
     loop = asyncio.get_running_loop()
     pool = request.app.state.audio_pool
-    wavs = await asyncio.gather(*(loop.run_in_executor(pool, load_audio, r) for r in raws))
+    try:
+        wavs = await asyncio.gather(*(loop.run_in_executor(pool, load_audio, r) for r in raws))
+    except AudioDecodeError as exc:
+        logger.warning("batch audio decode failed: %s", exc)
+        raise HTTPException(status_code=415, detail=f"audio decode failed: {exc}") from exc
+    except Exception as exc:
+        logger.exception("batch audio decode failed")
+        raise HTTPException(status_code=415, detail=f"audio decode failed: {exc}") from exc
 
     worker = request.app.state.worker
     results = await worker.submit_many(list(wavs), model_name)

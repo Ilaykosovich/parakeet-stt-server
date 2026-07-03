@@ -1,0 +1,12 @@
+onnx-asr[hub]>=0.10.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+psutil>=5.0.0
+requests>=2.0.0
+imageio-ffmpeg>=0.5.1
+onnxruntime==1.26.0
+numpy<2
+
+# Optional for long-audio pause-aware chunking:
+# silero-vad>=6.0.0
